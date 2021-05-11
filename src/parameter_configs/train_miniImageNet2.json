@@ -1,0 +1,27 @@
+{
+    "allTrain": "/data/ILSVRC2012/train/",
+    "allValid": "/data/ILSVRC2012/val/",
+    "all_novel_indices": [
+        3,
+        5,
+        6,
+        7,
+        12
+    ],
+    "do_tukey": false,
+    "train_hyperparameters": false,
+    "k": 2,
+    "tukey_parameter": 0.5,
+    "alpha": 0.21,
+    "generated_features": 750,
+    "image_size": [
+        84,
+        84
+    ],
+    "epochs": 10,
+    "just_for_timing": true,
+    "tsne": false,
+    "results": "result_miniImageNet2.json",
+    "k_shots": 1,
+    "split": 0.3
+}

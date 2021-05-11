@@ -1,0 +1,33 @@
+{
+    "allTrain": "data/train/all",
+    "allValid": "data/valid/all",
+    "allTest": "data/test/all",
+    "all_novel_indices": [
+        3,
+        5,
+        6,
+        7,
+        12
+    ],
+    "do_tukey": false,
+    "train_hyperparameters": [
+        "genFeatures",
+        0,
+        750,
+        16
+    ],
+    "k": 1,
+    "tukey_parameter": 0.5,
+    "alpha": 0.2,
+    "generated_features": 200,
+    "image_size": [
+        84,
+        84
+    ],
+    "epochs": 10,
+    "just_for_timing": false,
+    "tsne": false,
+    "results": "result_train_hyper_gen_features_notukey.json",
+    "k_shots": 1,
+    "split": false
+}
