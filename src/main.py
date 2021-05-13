@@ -22,6 +22,8 @@ import sys
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 print(device)
 
+# boat dataset can be downloaded from https://artist-cloud.ecs.soton.ac.uk/index.php/s/eAhIkhhdxgmhRHj/download
+
 paras = {
     "allTrain": "data/train/all",  # all train data location
     "allValid": "data/valid/all",  # all valid data location
@@ -42,7 +44,7 @@ paras = {
     "just_for_timing": True,  # runs it once, it's up to you to time it
     "tsne": True,  # makes t-SNE stuff,
     "results": "results.json",
-    "split": False # if not false, splits train into test and train in the given ratio
+    "split": False  # if not false, splits train into test and train in the given ratio
 }
 
 # train_hyperparameter names: k, tukey, alpha,genFeatures
@@ -61,6 +63,7 @@ transform = transforms.Compose([
     transforms.Resize(paras['image_size']),
     transforms.ToTensor(),  # convert to tensor
     transforms.Lambda(lambda x: tukey(x, paras['tukey_parameter'], paras['do_tukey'])),
+    # Algorithm 1, step 1 of original paper
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
@@ -70,7 +73,7 @@ transform = transforms.Compose([
 # for each class in the training set
 #   Calibrate the mean µ 0 and the covariance Σ0 for class yi using xi with Equation 6
 #   Sample features for class yi from the calibrated distribution as Equation 7
-def tukey(features, hyperparam, do_tukey):
+def tukey(features, hyperparam, do_tukey):  # Equation 3 of original paper
     if not do_tukey:
         return features
     if hyperparam != 0:
@@ -78,11 +81,7 @@ def tukey(features, hyperparam, do_tukey):
     return torch.log(features)
 
 
-def cov_inner(mean, x):
-    return (x - mean) @ (x - mean).T
-
-
-def cov(features, mean):
+def cov(features, mean):  # Equation 2 in original paper
     value = 0
     for f in features:
         covf = []
@@ -92,7 +91,7 @@ def cov(features, mean):
     return value / (len(features) - 1)
 
 
-def to_dictionary(loader, dataset, novel_indices):
+def to_dictionary(loader, dataset, novel_indices):  # wraps data
     base_classes = defaultdict(list)
     novel_classes = defaultdict(list)
     iterator = iter(loader)
@@ -106,7 +105,7 @@ def to_dictionary(loader, dataset, novel_indices):
     return base_classes, novel_classes
 
 
-def from_dictionary(dictionary, feature_list, label_list):
+def from_dictionary(dictionary, feature_list, label_list):  # unwraps data
     for label, features in dictionary.items():
         for feature in features:
             feature_list.append(feature)
@@ -121,23 +120,25 @@ def training_procedure(all_dataset, novel_indices, batch_size):
     base_covs = {}
     k = paras["k"]
     alpha = paras["alpha"]
-    for label, features in base_classes.items():  # get base classes' statistics
+    for label, features in base_classes.items():  # get base classes' statistics - Requirement 2 in algorithm 1 in original paper
         base_means[label] = torch.mean(torch.stack(features), dim=0)
         base_covs[label] = cov(features, base_means[label])
 
     sampled_classes = {}
     for label, features in novel_classes.items():
+        # Algorithm 1 step 3 in original paper
         calibrated_means = []
         calibrated_covs = []
         for sample_element in features:
+            # Equation 4 in original paper
             euclidean_distances = {}
             for base_label, base_mean in base_means.items():
                 euclidean_distances[-(torch.linalg.norm(base_mean - sample_element)) ** 2] = base_label
 
-            # select the top k elements
+            # select the top k elements - equation 5 in original paper
             top_k = list(dict(sorted(euclidean_distances.items(), reverse=True)).items())[:k]
 
-            # calibrate the mean and covariance for each novel class
+            # calibrate the mean and covariance for each novel class - equation 6 in original paper
             sum_mean = 0
             sum_cov = 0
             for dist, label_inner in top_k:
@@ -146,12 +147,13 @@ def training_procedure(all_dataset, novel_indices, batch_size):
             calibrated_means.append((sum_mean + sample_element) / (k + 1))
             calibrated_covs.append((sum_cov / k) + alpha)
 
-        # sample features
+        # sample features - Algorithm 1 step 4 in original paper
         sample_features = []
         for i in range(paras["generated_features"]):
             calib_to_use_index = i % len(calibrated_means)
             sample_features.append(
-                torch.normal(calibrated_means[calib_to_use_index], calibrated_covs[calib_to_use_index]))
+                torch.normal(calibrated_means[calib_to_use_index],
+                             calibrated_covs[calib_to_use_index]))  # equation 7 in original paper
         sampled_classes[label] = sample_features
 
     all_features = []
@@ -166,7 +168,7 @@ def training_procedure(all_dataset, novel_indices, batch_size):
     return all_together, total_classes
 
 
-def rebase_to_novel(dataset, novel_indices):
+def rebase_to_novel(dataset, novel_indices):  # removes non-novel classes
     loader = DataLoader(dataset, batch_size=batch_size)
     all_features = []
     all_labels = []
@@ -180,7 +182,8 @@ def rebase_to_novel(dataset, novel_indices):
     return list(zip(all_features, all_labels))
 
 
-def reduce_to_k(dataset, novel_indices): #TODO work and implement
+def reduce_to_k(dataset,
+                novel_indices):  # removes all novel elements except the first k - assumes the dataset is shuffled
     loader = DataLoader(dataset, batch_size=batch_size)
     all_features = []
     all_labels = []
@@ -205,14 +208,14 @@ def plot_tsne(support_set, generated_set, targetLoc):
     s_x = [d[0].flatten().detach().cpu().numpy() for d in support_set]
     s_y = [d[1] for d in support_set]
     g_x = [d[0].flatten().detach().cpu().numpy() for d in generated_set]
-    g_y = [d[1] for d in generated_set if np.isin(d[0].flatten().detach().cpu().numpy(), s_x, invert=True).any()]
+    g_y = [d[1] for d in generated_set]
     s_x = embeddings.fit_transform(s_x)
     g_x = embeddings.fit_transform(g_x)
     fig, ax = plt.subplots()
     ax.scatter(g_x[:, 0], g_x[:, 1], c=g_y, alpha=0.2, cmap=plt.cm.Spectral)
     ax.scatter(s_x[:, 0], s_x[:, 1], c=s_y, cmap=plt.cm.Spectral, edgecolor='black')
     plt.title("t-SNE Plot of Samples and generated features")
-    plt.savefig(targetLoc+".png")
+    plt.savefig(targetLoc + ".png")
 
 
 # Model Definition
@@ -251,7 +254,7 @@ def train_model(train, valid, test, classes, batch, num_epochs):
     test_loader = DataLoader(test, batch_size=batch)
 
     # define the loss function and the optimiser
-    loss_function = nn.CrossEntropyLoss()
+    loss_function = nn.CrossEntropyLoss()  # equation 8 in original paper
     optimiser = optim.Adam(model.parameters())
 
     trial = Trial(model, optimiser, loss_function, metrics=['loss', 'accuracy'], verbose=1).to(device)
@@ -267,13 +270,14 @@ def train_model(train, valid, test, classes, batch, num_epochs):
 def mean_and_confidence_interval_inner(data):
     mean = np.mean(data)
     std = np.std(data, ddof=1)
-    #confidence for 95%
+    # confidence for 95%
     plus_minus = 1.960 * std / np.sqrt(len(data))
 
     return mean, plus_minus
 
 
-def mean_and_confidence_interval(data): # should be input as arrays of tuples, where the tuples are (test value, validation value)
+def mean_and_confidence_interval(
+        data):  # should be input as arrays of tuples, where the tuples are (test value, validation value)
     # data_t = np.transpose(data)
     # print(data)
     # print(data_t)
@@ -289,7 +293,7 @@ def mean_and_confidence_interval(data): # should be input as arrays of tuples, w
 
 
 results = []
-if paras['just_for_timing']: # run once
+if paras['just_for_timing']:  # run once
     print('just for timing')
     all_train_dataset = ImageFolder(paras['allTrain'], transform)
     if paras['split']:
@@ -304,21 +308,25 @@ if paras['just_for_timing']: # run once
     allTrain_allVal_results = []
     newTrain_allVal_results = []
 
-    run_count = 1 #probably good to have at least 30
+    run_count = 1  # probably good to have at least 30
     for i in range(run_count):
         train_dataset, total_classes = training_procedure(all_train_dataset, paras['all_novel_indices'], batch_size)
         train_dataset = reduce_to_k(train_dataset, paras['all_novel_indices'])
-        allTrain_allVal_results.append(train_model(all_train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
-        newTrain_allVal_results.append(train_model(train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
+        allTrain_allVal_results.append(
+            train_model(all_train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size,
+                        paras['epochs']))
+        newTrain_allVal_results.append(
+            train_model(train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
     results.append(mean_and_confidence_interval(allTrain_allVal_results))
     results.append(mean_and_confidence_interval(newTrain_allVal_results))
 
     with open(paras['results'], "w") as f:
         json.dump(results, f, indent=4)
-elif type(paras['train_hyperparameters']) is list: # apply that hyperparameter a load of times, running each time to get the accuracies between min and max for the given number of steps, and output the mean and range of those.
+elif type(paras[
+              'train_hyperparameters']) is list:  # apply that hyperparameter a load of times, running each time to get the accuracies between min and max for the given number of steps, and output the mean and range of those.
     print("train hypers")
     step_size = (paras['train_hyperparameters'][2] - paras['train_hyperparameters'][1]) / float(
-        paras['train_hyperparameters'][3]-1)
+        paras['train_hyperparameters'][3] - 1)
     all_train_dataset = ImageFolder(paras['allTrain'], transform)
     if paras['split']:
         train_ids, test_ids = train_test_split(list(range(len(all_train_dataset))), test_size=paras['split'])
@@ -337,9 +345,9 @@ elif type(paras['train_hyperparameters']) is list: # apply that hyperparameter a
 
     for i in range(paras['train_hyperparameters'][3]):
         new_hyper_value = i * step_size + paras['train_hyperparameters'][1]
-        if paras['train_hyperparameters'][0] == 'k': # 1 through 10, 10 steps
+        if paras['train_hyperparameters'][0] == 'k':  # 1 through 10, 10 steps
             k = new_hyper_value
-        elif paras['train_hyperparameters'][0] == 'tukey': #
+        elif paras['train_hyperparameters'][0] == 'tukey':  #
             tukey_parameter = new_hyper_value
         elif paras['train_hyperparameters'][0] == 'alpha':
             alpha = new_hyper_value
@@ -350,14 +358,18 @@ elif type(paras['train_hyperparameters']) is list: # apply that hyperparameter a
 
         allTrain_allVal_results = []
         newTrain_allVal_results = []
-        
-        train_hyperparameter_rounds = 30 #probably good to have at least 30
+
+        train_hyperparameter_rounds = 30  # probably good to have at least 30
         for i in range(train_hyperparameter_rounds):
             print(f'round {i}')
             train_dataset, total_classes = training_procedure(all_train_dataset, paras['all_novel_indices'], batch_size)
             train_dataset = reduce_to_k(train_dataset, paras['all_novel_indices'])
-            allTrain_allVal_results.append(train_model(all_train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
-            newTrain_allVal_results.append(train_model(train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
+            allTrain_allVal_results.append(
+                train_model(all_train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size,
+                            paras['epochs']))
+            newTrain_allVal_results.append(
+                train_model(train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size,
+                            paras['epochs']))
 
         allTrain_allVal_results.append(mean_and_confidence_interval(allTrain_allVal_results))
         newTrain_allVal_results.append(mean_and_confidence_interval(newTrain_allVal_results))
@@ -370,20 +382,24 @@ elif type(paras['train_hyperparameters']) is list: # apply that hyperparameter a
         with open(paras['results'], "w") as f:
             json.dump(results, f, indent=4)
 
-elif paras['tsne']: # do tsne visualisation of novel classes showing support set (outlined) and generated set
-    print("tsne")
+elif paras['tsne']:  # do tsne visualisation of novel classes showing support set (outlined) and generated set
+    print("t-SNE")
     all_train_dataset = ImageFolder(paras['allTrain'], transform)
     all_val_dataset = ImageFolder(paras['allValid'], transform)
+
+    all_train_dataset = reduce_to_k(all_train_dataset, paras['all_novel_indices'])
     novel_train_dataset = rebase_to_novel(all_train_dataset, paras['all_novel_indices'])
+
     generated_dataset, _ = training_procedure(all_train_dataset, paras['all_novel_indices'], batch_size)
     novel_generated_dataset = rebase_to_novel(generated_dataset, paras['all_novel_indices'])
-    novel_generated_dataset = reduce_to_k(generated_dataset, paras['all_novel_indices'])
+
     novel_val_dataset = ImageFolder(paras['allValid'], transform)
     novel_val_dataset = rebase_to_novel(novel_val_dataset, paras['all_novel_indices'])
-    plot_tsne(novel_train_dataset, novel_generated_dataset, paras['results']+"1")
-    print(6)
-    plot_tsne(novel_train_dataset, novel_val_dataset, paras['results']+"2")
-else: # give the mean and confidence interval
+
+    plot_tsne(novel_train_dataset, novel_generated_dataset, paras['results'] + "1")
+    print('t-SNE Completed')
+    plot_tsne(novel_train_dataset, novel_val_dataset, paras['results'] + "2")
+else:  # give the mean and confidence interval
     print("mean and confidence")
     all_train_dataset = ImageFolder(paras['allTrain'], transform)
     if paras['split']:
@@ -397,20 +413,22 @@ else: # give the mean and confidence interval
 
     allTrain_allVal_results = []
     newTrain_allVal_results = []
-    
-    run_count = 30 #probably good to have at least 30
+
+    run_count = 30  # probably good to have at least 30
     for i in range(run_count):
         print(f"round {i}")
         train_dataset, total_classes = training_procedure(all_train_dataset, paras['all_novel_indices'], batch_size)
         train_dataset = reduce_to_k(train_dataset, paras['all_novel_indices'])
-        allTrain_allVal_results.append(train_model(all_train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
-        newTrain_allVal_results.append(train_model(train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
+        allTrain_allVal_results.append(
+            train_model(all_train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size,
+                        paras['epochs']))
+        newTrain_allVal_results.append(
+            train_model(train_dataset, all_val_dataset, all_test_dataset, total_classes, batch_size, paras['epochs']))
     results.append(mean_and_confidence_interval(allTrain_allVal_results))
     results.append(mean_and_confidence_interval(newTrain_allVal_results))
 
     with open(paras['results'], "w") as f:
         json.dump(results, f, indent=4)
-
 
 # titles = ["Unchanged, novel validation", "Changed, novel validation", "Unchanged, all validation", "Changed, all validation"]
 #
@@ -420,4 +438,6 @@ else: # give the mean and confidence interval
 # for title, result in zip(titles, results):
 #     data[title] = result
 
-# TODO comment everything - reference functions from the paper etc.
+
+# Original paper:
+# Yang, S., Liu, L. and Xu, M., 2021. Free lunch for few-shot learning: Distribution calibration. arXiv preprint arXiv:2101.06395.
